@@ -1,0 +1,27 @@
+# Scraping
+requests
+beautifulsoup4
+feedparser
+lxml
+
+# Data & storage
+pandas
+python-dotenv
+
+# NLP
+spacy
+scikit-learn
+
+# API
+fastapi
+uvicorn
+
+# Dashboard
+streamlit
+plotly
+
+# Experiment tracking
+mlflow
+
+# Testing
+pytest
