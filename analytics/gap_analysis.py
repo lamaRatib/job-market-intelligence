@@ -1,86 +1,124 @@
 import sqlite3
-from pipeline.db import get_connection
+import pandas as pd
+import logging
 
-def get_top_skills(source_tier: str = None, top_n: int = 20) -> list[dict]:
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+DB_PATH = "data/processed/jobs.db"
+
+def get_skill_demand(source_tier: str = None, top_n: int = 20) -> pd.Series:
     """Return top N skills, optionally filtered by source tier."""
-    conn = get_connection()
+    conn = sqlite3.connect(DB_PATH)
     if source_tier:
-        rows = conn.execute("""
-            SELECT skill, SUM(count) as total
-            FROM skill_counts
-            WHERE source_tier = ?
-            GROUP BY skill
-            ORDER BY total DESC
-            LIMIT ?
-        """, (source_tier, top_n)).fetchall()
+        df = pd.read_sql(
+            "SELECT skills FROM processed_jobs WHERE source_tier = ? AND skills != ''",
+            conn, params=(source_tier,)
+        )
     else:
-        rows = conn.execute("""
-            SELECT skill, SUM(count) as total
-            FROM skill_counts
-            GROUP BY skill
-            ORDER BY total DESC
-            LIMIT ?
-        """, (top_n,)).fetchall()
+        df = pd.read_sql(
+            "SELECT skills FROM processed_jobs WHERE skills != ''", conn
+        )
     conn.close()
-    return [{"skill": r["skill"], "count": r["total"]} for r in rows]
 
-def get_palestine_jobs(top_n: int = 50) -> list[dict]:
-    """Return jobs that mention Palestine."""
-    conn = get_connection()
-    rows = conn.execute("""
-        SELECT title, company, location, skills, url, source
-        FROM processed_jobs
-        WHERE is_palestine_mentioned = 1
-        ORDER BY date_posted DESC
-        LIMIT ?
-    """, (top_n,)).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    all_skills = []
+    for row in df["skills"].dropna():
+        all_skills.extend([s.strip().lower() for s in row.split(",") if s.strip()])
 
-def get_remote_jobs(top_n: int = 50) -> list[dict]:
-    """Return remote-friendly jobs."""
-    conn = get_connection()
-    rows = conn.execute("""
-        SELECT title, company, location, skills, url, source, job_category
-        FROM processed_jobs
-        WHERE is_remote = 1
-        ORDER BY date_posted DESC
-        LIMIT ?
-    """, (top_n,)).fetchall()
+    return pd.Series(all_skills).value_counts().head(top_n)
+
+def get_global_demand(top_n: int = 20) -> pd.Series:
+    return get_skill_demand(source_tier=None, top_n=top_n)
+
+def get_palestine_demand(top_n: int = 20) -> pd.Series:
+    return get_skill_demand(source_tier="palestine", top_n=top_n)
+
+def get_remote_demand(top_n: int = 20) -> pd.Series:
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql(
+        "SELECT skills FROM processed_jobs WHERE is_remote = 1 AND skills != ''", conn
+    )
     conn.close()
-    return [dict(r) for r in rows]
+    all_skills = []
+    for row in df["skills"].dropna():
+        all_skills.extend([s.strip().lower() for s in row.split(",") if s.strip()])
+    return pd.Series(all_skills).value_counts().head(top_n)
 
 def compute_skill_gap(user_skills: list[str], top_n: int = 20) -> dict:
     """
     Compare user skills against global demand.
-    Returns missing skills ranked by market demand.
+    Returns missing high-demand skills and recommended next skills.
     """
-    user_set = {s.lower().strip() for s in user_skills}
-    global_top = get_top_skills(top_n=top_n)
+    user_set = {s.strip().lower() for s in user_skills if s.strip()}
+    global_demand = get_global_demand(top_n=top_n)
 
     missing = []
-    already_have = []
+    for skill, count in global_demand.items():
+        if skill not in user_set:
+            missing.append({
+                "skill": skill,
+                "global_demand_count": int(count),
+                "priority": "high" if count >= global_demand.quantile(0.75) else "medium"
+            })
 
-    for item in global_top:
-        if item["skill"] in user_set:
-            already_have.append(item)
-        else:
-            missing.append(item)
+    # Recommend top 5 missing skills by demand
+    recommendations = sorted(missing, key=lambda x: x["global_demand_count"], reverse=True)[:5]
 
     return {
-        "user_skills": sorted(user_set),
-        "already_have": already_have,
-        "missing": missing,
-        "coverage_pct": round(len(already_have) / len(global_top) * 100, 1) if global_top else 0
+        "user_skills": list(user_set),
+        "missing_skills": missing,
+        "recommendations": recommendations,
+        "coverage_score": round(len(user_set.intersection(global_demand.index)) / len(global_demand) * 100, 1)
     }
 
+def get_remote_readiness(top_n: int = 20) -> pd.DataFrame:
+    """Score each job's remote accessibility."""
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql("SELECT * FROM processed_jobs", conn)
+    conn.close()
+
+    def score(row):
+        score = 0.0
+        if row["is_remote"]:
+            score += 0.5
+        if row["country_code"] in ("REMOTE", None, ""):
+            score += 0.2
+        if row["source_tier"] == "remote":
+            score += 0.2
+        # Jobs with skills listed are more complete/legitimate
+        if row["skills"]:
+            score += 0.1
+        return round(min(score, 1.0), 2)
+
+    df["remote_readiness_score"] = df.apply(score, axis=1)
+
+    # Write scores back to DB
+    conn = sqlite3.connect(DB_PATH)
+    for _, row in df.iterrows():
+        conn.execute(
+            "UPDATE processed_jobs SET remote_readiness_score = ? WHERE id = ?",
+            (row["remote_readiness_score"], row["id"])
+        )
+    conn.commit()
+    conn.close()
+
+    return df[["title", "company", "source_tier", "is_remote", "remote_readiness_score"]]\
+        .sort_values("remote_readiness_score", ascending=False)\
+        .head(top_n)
+
 if __name__ == "__main__":
-    # Quick test
-    result = compute_skill_gap(["python", "sql", "docker"])
-    print(f"\nYour coverage of top {20} skills: {result['coverage_pct']}%")
-    print("\nYou already have:")
-    for s in result["already_have"]:
-        print(f"  ✓ {s['skill']} (demand: {s['count']})")
-    print("\nMissing in-demand skills:")
-    for s in result["missing"][:10]:
-        print(f"  ✗ {s['skill']} (demand: {s['count']})")
+    print("\n── Global top skills ──")
+    print(get_global_demand(10).to_string())
+
+    print("\n── Remote top skills ──")
+    print(get_remote_demand(10).to_string())
+
+    print("\n── Remote readiness top 10 ──")
+    print(get_remote_readiness(10).to_string(index=False))
+
+    print("\n── Skill gap (example: user knows python, sql) ──")
+    gap = compute_skill_gap(["python", "sql"])
+    print(f"Coverage: {gap['coverage_score']}%")
+    print("Recommendations:")
+    for r in gap["recommendations"]:
+        print(f"  [{r['priority']}] {r['skill']} — seen in {r['global_demand_count']} jobs")
