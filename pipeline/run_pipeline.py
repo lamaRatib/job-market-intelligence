@@ -8,6 +8,7 @@ from scraper.run_all import run_all as run_scrapers
 from pipeline.ingest import run as run_ingest
 from pipeline.aggregator import run as run_aggregator
 from models.classifier import train, apply_to_db
+from models.experiment import run_experiment
 from analytics.gap_analysis import get_remote_readiness, compute_skill_gap
 
 def main():
@@ -21,6 +22,9 @@ def main():
     run_aggregator()
 
     logger.info("\n═══ Step 4: ML — train classifier ═══")
+    for C in [0.1, 1.0, 5.0]:
+        run_experiment(C=C)
+    logger.info("\nView results: mlflow ui")
     model = train()
     if model:
         apply_to_db()
