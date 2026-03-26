@@ -1,13 +1,5 @@
-import subprocess, sys, os
-
-try:
-    import spacy
-    spacy.load("en_core_web_sm")
-except OSError:
-    subprocess.run(
-        [sys.executable, "-m", "spacy", "download", "en_core_web_sm"],
-        check=True
-    )
+import sys
+import os
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -34,6 +26,13 @@ st.set_page_config(
 )
 
 DB_PATH = "data/processed/jobs.db"
+
+if not os.path.exists(DB_PATH):
+    st.error(
+        "Database not found. Please run `python pipeline/run_pipeline.py` "
+        "locally first, then commit `data/processed/jobs.db` to your repo."
+    )
+    st.stop()
 
 # ── Shared data loaders ───────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
