@@ -1,4 +1,14 @@
-import sys, os
+import subprocess, sys, os
+
+try:
+    import spacy
+    spacy.load("en_core_web_sm")
+except OSError:
+    subprocess.run(
+        [sys.executable, "-m", "spacy", "download", "en_core_web_sm"],
+        check=True
+    )
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import streamlit as st
