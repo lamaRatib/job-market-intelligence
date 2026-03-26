@@ -3,7 +3,5 @@ __pycache__/
 *.pyc
 .venv/
 data/raw/
-data/processed/
-*.db
 mlruns/
 .DS_Store
